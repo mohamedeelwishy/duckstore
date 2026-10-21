@@ -1,0 +1,13 @@
+# Terraform State & Secrets
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/*.tfvars.json
+terraform/.terraform.lock.hcl
+
+# App builds & Dependencies
+app/node_modules/
+app/dist/
+app/build/
+app/.env

@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: duck-data
+  namespace: backend
+  labels:
+    app: duck-api
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: duck-api
+  namespace: backend
+  labels:
+    app: duck-api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: duck-api
+  template:
+    metadata:
+      labels:
+        app: duck-api
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: api
+          # Bootstrap placeholder: The CI/CD pipeline overrides this tag with an immutable Git SHA
+          image: ghcr.io/mohamedeelwishy/duckstore-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: DB_PATH
+              value: /data/duckstore.db
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              # CPU limits are intentionally omitted to avoid CFS quota throttling and tail latency
+              # spikes while the node has spare CPU cycles available. Memory limit is strictly enforced
+              # to prevent host OOM exhaustion.
+              memory: 256Mi
+          startupProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: duck-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: duck-api
+  namespace: backend
+  labels:
+    app: duck-api
+spec:
+  type: ClusterIP
+  selector:
+    app: duck-api
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP

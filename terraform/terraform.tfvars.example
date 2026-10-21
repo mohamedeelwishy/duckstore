@@ -1,0 +1,16 @@
+region       = "eu-west-1"
+project_name = "duckstore"
+environment  = "prod"
+owner        = "Mohamed Elwishy"
+
+instance_type          = "t3.small"
+root_volume_size       = 20
+disable_metrics_server = true
+domain_name            = "duckstore.example.com"
+
+# Optional:
+# key_pair_name         = "my-keypair"
+# ssh_allowed_cidrs     = ["203.0.113.45/32"]
+# k8s_api_allowed_cidrs = ["203.0.113.45/32"]
+# enable_nodeport_range = false
+# k3s_version           = "v1.31.4+k3s1"

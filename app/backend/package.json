@@ -1,0 +1,16 @@
+{
+  "name": "duckstore-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Duck Store API — SQLite-backed catalogue and orders",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
