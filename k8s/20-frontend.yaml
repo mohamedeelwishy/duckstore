@@ -27,7 +27,7 @@ spec:
         - name: web
           # Bootstrap placeholder: The CI/CD pipeline overrides this tag with an immutable Git SHA
           image: ghcr.io/mohamedeelwishy/duckstore-frontend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 3000

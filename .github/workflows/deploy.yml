@@ -1,0 +1,196 @@
+name: Deploy DuckStore
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Node.js syntax checks
+        run: |
+          node --check app/backend/server.js
+          node --check app/frontend/server.js
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform checks
+        run: |
+          terraform fmt -check
+          terraform init -backend=false
+          terraform validate
+        working-directory: terraform
+
+  build-and-push:
+    name: Build & Push Images
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase repository name
+        id: repo
+        run: echo "name=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push duckstore-backend
+        uses: docker/build-push-action@v6
+        with:
+          context: app/backend
+          file: app/backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.name }}-backend:${{ github.sha }}
+            ghcr.io/${{ steps.repo.outputs.name }}-backend:latest
+
+      - name: Build & push duckstore-frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: app/frontend
+          file: app/frontend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.name }}-frontend:${{ github.sha }}
+            ghcr.io/${{ steps.repo.outputs.name }}-frontend:latest
+
+  deploy:
+    name: Deploy to EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-1
+
+      - name: Deploy workloads via AWS SSM
+        run: |
+          set -euo pipefail
+
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG="${{ github.sha }}"
+
+          echo "Resolving EC2 instance with tag Role=k3s-server..."
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Role,Values=k3s-server" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "Error: No running EC2 instance found with tag Role=k3s-server"
+            exit 1
+          fi
+          echo "Target EC2 Instance: $INSTANCE_ID"
+
+          cat << 'EOF' > deploy.sh
+          set -euo pipefail
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+          TMP_DIR=$(mktemp -d /tmp/k8s-deploy-XXXXXX)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+
+          echo "Pulling updated k8s manifests into $TMP_DIR..."
+          git clone --depth 1 "https://x-access-token:__TOKEN__@github.com/__REPO__.git" "$TMP_DIR" 2>/dev/null || git clone --depth 1 "https://github.com/__REPO__.git" "$TMP_DIR"
+
+          cd "$TMP_DIR/k8s"
+
+          echo "Substituting container images with commit SHA tags..."
+          sed -i -E 's|image: .*(-backend:|duckstore-backend:).*|image: ghcr.io/__REPO_LOWER__-backend:__SHA__|g' 10-backend.yaml
+          sed -i -E 's|image: .*(-frontend:|duckstore-frontend:).*|image: ghcr.io/__REPO_LOWER__-frontend:__SHA__|g' 20-frontend.yaml
+
+          echo "Applying manifests..."
+          sudo kubectl apply -f .
+
+          echo "Verifying backend rollout..."
+          sudo kubectl -n backend rollout status deployment/duck-api --timeout=120s
+
+          echo "Verifying frontend rollout..."
+          sudo kubectl -n frontend rollout status deployment/duck-web --timeout=120s
+
+          echo "Deployment finished successfully."
+          EOF
+
+          sed -i "s|__TOKEN__|${{ secrets.GITHUB_TOKEN }}|g" deploy.sh
+          sed -i "s|__REPO__|${{ github.repository }}|g" deploy.sh
+          sed -i "s|__REPO_LOWER__|$REPO_LOWER|g" deploy.sh
+          sed -i "s|__SHA__|$IMAGE_TAG|g" deploy.sh
+
+          python3 -c '
+          import json
+          with open("deploy.sh") as f:
+              commands = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+          with open("ssm-parameters.json", "w") as f:
+              json.dump({"commands": commands}, f, indent=2)
+          '
+
+          echo "Dispatching deployment command via AWS SSM..."
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy DuckStore commit ${{ github.sha }}" \
+            --parameters file://ssm-parameters.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          echo "Waiting for command execution to complete..."
+          set +e
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+          WAIT_EXIT=$?
+          set -e
+
+          INVOCATION_JSON=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --output json)
+
+          echo "=== STDOUT ==="
+          echo "$INVOCATION_JSON" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("StandardOutputContent", ""))'
+
+          echo "=== STDERR ==="
+          echo "$INVOCATION_JSON" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("StandardErrorContent", ""))' >&2
+
+          if [ $WAIT_EXIT -ne 0 ]; then
+            STATUS=$(echo "$INVOCATION_JSON" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("Status", "Failed"))')
+            echo "Error: Deployment command failed with SSM status: $STATUS"
+            exit 1
+          fi
+
+          echo "Deployment succeeded!"

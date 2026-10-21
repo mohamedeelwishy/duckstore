@@ -58,7 +58,19 @@ output "fetch_kubeconfig" {
   description = "Commands to retrieve the cluster kubeconfig (requires sudo on the host for 0600 permissions)."
   value = join(" && ", [
     "ssh ubuntu@${aws_eip.node.public_ip} 'sudo cat /etc/rancher/k3s/k3s.yaml' > ~/.kube/duckstore.yaml",
-    "sed -i '' 's/127.0.0.1/${aws_eip.node.public_ip}/' ~/.kube/duckstore.yaml",
+    "sed -i 's/127.0.0.1/${aws_eip.node.public_ip}/' ~/.kube/duckstore.yaml",
+    "chmod 600 ~/.kube/duckstore.yaml",
+    "KUBECONFIG=~/.kube/duckstore.yaml kubectl get pods -A",
+  ])
+}
+
+output "fetch_kubeconfig_ssm" {
+  description = "Retrieve the cluster kubeconfig securely over AWS SSM without direct SSH access."
+  value = join(" && ", [
+    "CMD_ID=$(aws ssm send-command --instance-ids ${aws_instance.node.id} --region ${var.region} --document-name AWS-RunShellScript --parameters 'commands=[\"sudo cat /etc/rancher/k3s/k3s.yaml\"]' --query 'Command.CommandId' --output text)",
+    "aws ssm wait command-executed --command-id $CMD_ID --instance-id ${aws_instance.node.id} --region ${var.region}",
+    "aws ssm get-command-invocation --command-id $CMD_ID --instance-id ${aws_instance.node.id} --region ${var.region} --query 'StandardOutputContent' --output text > ~/.kube/duckstore.yaml",
+    "sed -i 's/127.0.0.1/${aws_eip.node.public_ip}/' ~/.kube/duckstore.yaml",
     "chmod 600 ~/.kube/duckstore.yaml",
     "KUBECONFIG=~/.kube/duckstore.yaml kubectl get pods -A",
   ])
