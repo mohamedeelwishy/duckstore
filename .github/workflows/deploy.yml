@@ -1,4 +1,88 @@
-deploy:
+name: Deploy DuckStore
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Node.js syntax checks
+        run: |
+          node --check app/backend/server.js
+          node --check app/frontend/server.js
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform checks
+        run: |
+          terraform fmt -check
+          terraform init -backend=false
+          terraform validate
+        working-directory: terraform
+
+  build-and-push:
+    name: Build & Push Images
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase repository name
+        id: repo
+        run: echo "name=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push duckstore-backend
+        uses: docker/build-push-action@v6
+        with:
+          context: app/backend
+          file: app/backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.name }}-backend:${{ github.sha }}
+            ghcr.io/${{ steps.repo.outputs.name }}-backend:latest
+
+      - name: Build & push duckstore-frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: app/frontend
+          file: app/frontend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.name }}-frontend:${{ github.sha }}
+            ghcr.io/${{ steps.repo.outputs.name }}-frontend:latest
+
+  deploy:
     name: Deploy to EC2
     needs: build-and-push
     runs-on: ubuntu-latest
