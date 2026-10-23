@@ -477,7 +477,7 @@ app.get("/", async (req, res) => {
     <section class="hero">
       <div>
         <span class="kicker">Free shipping over $40</span>
-        <h1>Engineered rubber ducks for development and production.</h1>
+        <h1>Duck Store Live Update - Mohamed Elwishy!</h1>
         <p>
           Catalogue of collectible debugging ducks with persistent data storage and decoupled microservices architecture.
         </p>
