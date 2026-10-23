@@ -117,7 +117,7 @@ jobs:
           echo "Target EC2 Instance: $INSTANCE_ID"
 
           cat << 'EOF' > deploy.sh
-          set -euo pipefail
+          set -eu
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
           TMP_DIR=$(mktemp -d /tmp/k8s-deploy-XXXXXX)
