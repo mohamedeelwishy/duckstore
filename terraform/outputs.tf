@@ -1,77 +1,82 @@
+# =============================================================================
+# Core Infrastructure Outputs
+# =============================================================================
+
 output "region" {
   description = "AWS region the infrastructure lives in."
   value       = var.region
 }
 
-output "elastic_ip" {
-  description = "Static public IP assigned to the K3s node."
-  value       = aws_eip.node.public_ip
+output "vpc_id" {
+  description = "Identifier of the provisioned VPC."
+  value       = aws_vpc.main.id
 }
 
-output "store_url" {
-  description = "Application URL."
-  value       = "http://${aws_eip.node.public_ip}/"
+output "vpc_arn" {
+  description = "ARN of the provisioned VPC."
+  value       = aws_vpc.main.arn
 }
 
-output "cloudflare_dns_record" {
-  description = "DNS record configuration for Cloudflare."
-  value = {
-    type    = "A"
-    name    = var.domain_name != "" ? var.domain_name : "duckstore.<your-domain>"
-    content = aws_eip.node.public_ip
-    proxied = true
-    ttl     = "Auto"
-  }
+output "vpc_cidr_block" {
+  description = "Primary IPv4 CIDR block of the VPC."
+  value       = aws_vpc.main.cidr_block
 }
 
-output "instance_id" {
-  description = "EC2 instance ID of the K3s node."
-  value       = aws_instance.node.id
+output "public_subnet_ids" {
+  description = "List of public subnet IDs (for ALBs and internet-facing ingress)."
+  value       = aws_subnet.public[*].id
 }
 
-output "instance_private_ip" {
-  description = "Private IP inside the VPC."
-  value       = aws_instance.node.private_ip
+output "private_subnet_ids" {
+  description = "List of private subnet IDs (for EKS worker nodes and workloads)."
+  value       = aws_subnet.private[*].id
 }
 
-output "ami_id" {
-  description = "AMI ID used for the node."
-  value       = data.aws_ami.ubuntu.id
+# =============================================================================
+# AWS ECR Repositories Outputs
+# =============================================================================
+
+output "ecr_repository_backend_url" {
+  description = "URL of the DuckStore Backend ECR repository."
+  value       = aws_ecr_repository.backend.repository_url
 }
 
-output "ssm_session_command" {
-  description = "Open an SSM shell session on the node."
-  value       = "aws ssm start-session --target ${aws_instance.node.id} --region ${var.region}"
+output "ecr_repository_frontend_url" {
+  description = "URL of the DuckStore Frontend ECR repository."
+  value       = aws_ecr_repository.frontend.repository_url
 }
 
-output "ssh_command" {
-  description = "SSH command if key_pair_name and ssh_allowed_cidrs are configured."
-  value       = var.key_pair_name != "" ? "ssh -i ~/.ssh/${var.key_pair_name}.pem ubuntu@${aws_eip.node.public_ip}" : "SSH not configured"
+# =============================================================================
+# Amazon EKS Cluster Outputs
+# =============================================================================
+
+output "eks_cluster_name" {
+  description = "Name of the provisioned EKS cluster."
+  value       = aws_eks_cluster.main.name
 }
 
-output "watch_bootstrap" {
-  description = "Follow the bootstrap log via SSM."
-  value       = "aws ssm start-session --target ${aws_instance.node.id} --region ${var.region} --document-name AWS-StartInteractiveCommand --parameters command='sudo tail -f /var/log/duckstore-bootstrap.log'"
+output "eks_cluster_endpoint" {
+  description = "Kubernetes API server endpoint for the EKS cluster."
+  value       = aws_eks_cluster.main.endpoint
 }
 
-output "fetch_kubeconfig" {
-  description = "Commands to retrieve the cluster kubeconfig (requires sudo on the host for 0600 permissions)."
-  value = join(" && ", [
-    "ssh ubuntu@${aws_eip.node.public_ip} 'sudo cat /etc/rancher/k3s/k3s.yaml' > ~/.kube/duckstore.yaml",
-    "sed -i 's/127.0.0.1/${aws_eip.node.public_ip}/' ~/.kube/duckstore.yaml",
-    "chmod 600 ~/.kube/duckstore.yaml",
-    "KUBECONFIG=~/.kube/duckstore.yaml kubectl get pods -A",
-  ])
+output "eks_cluster_arn" {
+  description = "ARN of the provisioned EKS cluster."
+  value       = aws_eks_cluster.main.arn
 }
 
-output "fetch_kubeconfig_ssm" {
-  description = "Retrieve the cluster kubeconfig securely over AWS SSM without direct SSH access."
-  value = join(" && ", [
-    "CMD_ID=$(aws ssm send-command --instance-ids ${aws_instance.node.id} --region ${var.region} --document-name AWS-RunShellScript --parameters 'commands=[\"sudo cat /etc/rancher/k3s/k3s.yaml\"]' --query 'Command.CommandId' --output text)",
-    "aws ssm wait command-executed --command-id $CMD_ID --instance-id ${aws_instance.node.id} --region ${var.region}",
-    "aws ssm get-command-invocation --command-id $CMD_ID --instance-id ${aws_instance.node.id} --region ${var.region} --query 'StandardOutputContent' --output text > ~/.kube/duckstore.yaml",
-    "sed -i 's/127.0.0.1/${aws_eip.node.public_ip}/' ~/.kube/duckstore.yaml",
-    "chmod 600 ~/.kube/duckstore.yaml",
-    "KUBECONFIG=~/.kube/duckstore.yaml kubectl get pods -A",
-  ])
+output "eks_cluster_certificate_authority_data" {
+  description = "Base64 encoded certificate data required to communicate with the cluster."
+  value       = aws_eks_cluster.main.certificate_authority[0].data
+  sensitive   = true
+}
+
+output "eks_oidc_provider_arn" {
+  description = "ARN of the IAM OIDC Provider for IRSA."
+  value       = aws_iam_openid_connect_provider.eks.arn
+}
+
+output "update_kubeconfig_command" {
+  description = "CLI command to configure kubectl credentials for the EKS cluster."
+  value       = "aws eks update-kubeconfig --region ${var.region} --name ${aws_eks_cluster.main.name}"
 }

@@ -26,7 +26,7 @@ spec:
       containers:
         - name: web
           # Bootstrap placeholder: The CI/CD pipeline overrides this tag with an immutable Git SHA
-          image: ghcr.io/mohamedeelwishy/duckstore-frontend:latest
+          image: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/duckstore-frontend:latest
           imagePullPolicy: Always
           ports:
             - name: http

@@ -1,3 +1,7 @@
+# =============================================================================
+# General & Project Configuration
+# =============================================================================
+
 variable "region" {
   description = "AWS region to deploy into."
   type        = string
@@ -22,6 +26,16 @@ variable "owner" {
   default     = "Mohamed Elwishy"
 }
 
+variable "domain_name" {
+  description = "Domain name for DNS configuration and ingress host."
+  type        = string
+  default     = ""
+}
+
+# =============================================================================
+# Network Configuration
+# =============================================================================
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC."
   type        = string
@@ -33,68 +47,69 @@ variable "vpc_cidr" {
   }
 }
 
-variable "public_subnet_cidr" {
-  description = "CIDR block for the single public subnet the node lives in."
-  type        = string
-  default     = "10.0.1.0/24"
+variable "public_subnet_cidrs" {
+  description = "CIDR blocks for the public subnets (spread across 2 AZs)."
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+
+  validation {
+    condition     = length(var.public_subnet_cidrs) >= 2
+    error_message = "At least two public subnet CIDRs are required for high availability."
+  }
 }
 
-variable "instance_type" {
-  description = "EC2 instance type for the K3s node."
-  type        = string
-  default     = "t3.small"
+variable "private_subnet_cidrs" {
+  description = "CIDR blocks for the private subnets (spread across 2 AZs)."
+  type        = list(string)
+  default     = ["10.0.10.0/24", "10.0.20.0/24"]
+
+  validation {
+    condition     = length(var.private_subnet_cidrs) >= 2
+    error_message = "At least two private subnet CIDRs are required for EKS worker nodes."
+  }
 }
 
-variable "root_volume_size" {
-  description = "Root EBS volume size in GiB."
+# =============================================================================
+# Amazon EKS Configuration
+# =============================================================================
+
+variable "eks_version" {
+  description = "Kubernetes control plane version for Amazon EKS."
+  type        = string
+  default     = "1.31"
+}
+
+variable "node_instance_types" {
+  description = "Instance types for the EKS Managed Node Group."
+  type        = list(string)
+  default     = ["t3.medium"]
+}
+
+variable "node_desired_size" {
+  description = "Desired number of worker nodes in the Managed Node Group."
   type        = number
-  default     = 20
+  default     = 2
 }
 
-variable "key_pair_name" {
-  description = "Name of an existing EC2 key pair for SSH access."
-  type        = string
-  default     = ""
+variable "node_min_size" {
+  description = "Minimum number of worker nodes in the Managed Node Group."
+  type        = number
+  default     = 1
 }
 
-variable "ssh_allowed_cidrs" {
-  description = "CIDRs allowed to reach port 22."
-  type        = list(string)
-  default     = []
+variable "node_max_size" {
+  description = "Maximum number of worker nodes in the Managed Node Group."
+  type        = number
+  default     = 4
 }
 
-variable "k8s_api_allowed_cidrs" {
-  description = "CIDRs allowed to reach the Kubernetes API on port 6443."
-  type        = list(string)
-  default     = []
-}
-
-variable "enable_nodeport_range" {
-  description = "Open the NodePort range 30000-32767 to the internet."
-  type        = bool
-  default     = false
-}
-
-variable "k3s_version" {
-  description = "K3s release channel or exact version."
-  type        = string
-  default     = "stable"
-}
-
-variable "disable_metrics_server" {
-  description = "Skip K3s bundled metrics-server to conserve memory."
-  type        = bool
-  default     = true
-}
-
-variable "domain_name" {
-  description = "Domain name for DNS configuration and TLS SAN."
-  type        = string
-  default     = ""
-}
+# =============================================================================
+# Locals
+# =============================================================================
 
 locals {
-  name = "${var.project_name}-${var.environment}"
+  name         = "${var.project_name}-${var.environment}"
+  cluster_name = "${local.name}-eks"
 
   tags = {
     Project     = var.project_name
