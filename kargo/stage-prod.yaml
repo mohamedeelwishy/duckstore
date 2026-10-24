@@ -1,0 +1,60 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: prod
+  namespace: duckstore
+  labels:
+    app.kubernetes.io/part-of: duckstore
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: duckstore-warehouse
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      vars:
+        - name: gitRepo
+          value: https://github.com/mohamedeelwishy/duckstore.git
+        - name: backendImageRepo
+          value: 307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-backend
+        - name: frontendImageRepo
+          value: 307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-frontend
+      steps:
+        # Step 1: Clone the Git repository into the promotion workspace
+        - uses: git-clone
+          config:
+            repoURL: ${{ vars.gitRepo }}
+            checkout:
+              - branch: main
+                path: ./src
+
+        # Step 2: Update container image tag inside k8s/10-backend.yaml
+        - uses: yaml-update
+          config:
+            path: ./src/k8s/10-backend.yaml
+            updates:
+              - key: spec.template.spec.containers.0.image
+                value: ${{ imageFrom(vars.backendImageRepo).RepoURL }}:${{ imageFrom(vars.backendImageRepo).Tag }}
+
+        # Step 3: Update container image tag inside k8s/20-frontend.yaml
+        - uses: yaml-update
+          config:
+            path: ./src/k8s/20-frontend.yaml
+            updates:
+              - key: spec.template.spec.containers.0.image
+                value: ${{ imageFrom(vars.frontendImageRepo).RepoURL }}:${{ imageFrom(vars.frontendImageRepo).Tag }}
+
+        # Step 4: Commit manifest changes with [skip ci] to eliminate CI loops
+        - uses: git-commit
+          as: commit
+          config:
+            path: ./src
+            message: "chore(kargo): promote duckstore freight to prod [skip ci]"
+
+        # Step 5: Push updated manifests back to the main branch
+        - uses: git-push
+          config:
+            path: ./src
+            targetBranch: main

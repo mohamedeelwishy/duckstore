@@ -1,0 +1,17 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: duckstore-warehouse
+  namespace: duckstore
+  labels:
+    app.kubernetes.io/part-of: duckstore
+spec:
+  subscriptions:
+    - image:
+        repoURL: 307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-backend
+        updateStrategy: Digest
+        discoveryLimit: 5
+    - image:
+        repoURL: 307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-frontend
+        updateStrategy: Digest
+        discoveryLimit: 5

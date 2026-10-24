@@ -1,13 +1,19 @@
-name: Deploy DuckStore
+name: CI Build & Push to ECR
 
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "k8s/**"
+      - "kargo/**"
+      - "argocd/**"
+      - "*.md"
+      - "**/*.md"
+      - ".gitignore"
 
 env:
   AWS_REGION: eu-west-1
-  EKS_CLUSTER_NAME: duckstore-prod-eks
   ECR_BACKEND_REPO: duckstore-backend
   ECR_FRONTEND_REPO: duckstore-frontend
 
@@ -86,56 +92,3 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPO }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPO }}:latest
-
-  deploy:
-    name: Deploy to Amazon EKS
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: "latest"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to Amazon ECR (Resolve Registry)
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Authenticate to Amazon EKS
-        run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
-
-      - name: Substitute container image tags
-        run: |
-          ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
-          IMAGE_TAG="${{ github.sha }}"
-
-          echo "Updating backend image tag to ${ECR_REGISTRY}/${{ env.ECR_BACKEND_REPO }}:${IMAGE_TAG}..."
-          sed -i -E "s|image: .*duckstore-backend.*|image: ${ECR_REGISTRY}/${{ env.ECR_BACKEND_REPO }}:${IMAGE_TAG}|g" k8s/10-backend.yaml
-
-          echo "Updating frontend image tag to ${ECR_REGISTRY}/${{ env.ECR_FRONTEND_REPO }}:${IMAGE_TAG}..."
-          sed -i -E "s|image: .*duckstore-frontend.*|image: ${ECR_REGISTRY}/${{ env.ECR_FRONTEND_REPO }}:${IMAGE_TAG}|g" k8s/20-frontend.yaml
-
-      - name: Apply Kubernetes manifests
-        run: |
-          kubectl apply -f k8s/
-
-      - name: Monitor rollout status
-        run: |
-          echo "Verifying backend rollout..."
-          kubectl -n backend rollout status deployment/duck-api --timeout=180s
-
-          echo "Verifying frontend rollout..."
-          kubectl -n frontend rollout status deployment/duck-web --timeout=180s
-
-          echo "Deployment and rollouts successfully completed!"
