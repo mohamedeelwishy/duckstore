@@ -11,6 +11,7 @@ on:
       - "*.md"
       - "**/*.md"
       - ".gitignore"
+  workflow_dispatch:   #workflow_dispatch trigger
 
 env:
   AWS_REGION: eu-west-1
