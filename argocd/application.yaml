@@ -11,13 +11,22 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/mohamedeelwishy/duckstore.git
-    targetRevision: main
-    path: k8s
+    # Replaced Git repo URL with Helm repo or OCI registry URL 
+    repoURL: https://charts.example.com/
+    #  Specified chart name instead of Git directory path 
+    chart: duckstore
+    #  Uses chart version instead of a Git branch 
+    targetRevision: 1.2.0
+    #  Helm parameters and value overrides 
+    helm:
+      releaseName: duckstore
+      valuesObject:
+        replicaCount: 2
+        image:
+          tag: "v1.2.0"
   destination:
     server: https://kubernetes.default.svc
-    # Each manifest in k8s/ defines its own explicit namespace (frontend or backend)
-    namespace: default
+    namespace: duckstore
   syncPolicy:
     automated:
       prune: true
