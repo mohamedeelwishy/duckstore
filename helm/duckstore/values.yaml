@@ -1,0 +1,290 @@
+# ==============================================================================
+# values.yaml - Centralized Configuration for DuckStore Helm Chart
+# ==============================================================================
+# This file declares all user-configurable parameters and default values consumed
+# by the templates located in the `templates/` directory.
+#
+# HOW HELM VARIABLE INJECTION WORKS:
+# Any key defined here can be accessed inside template files using Go template
+# syntax:
+#   - `.Values.<key>` references top-level values (e.g., .Values.backend.image.repository)
+#   - `.Release.Name` and `.Release.Namespace` reference Helm built-in release metadata
+#   - Values can be overridden at install/upgrade time using:
+#       --set backend.image.tag="v1.2.3"
+#       -f custom-values.yaml
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# StorageClass Configuration (AWS EBS CSI Driver)
+# ------------------------------------------------------------------------------
+# Provisions dynamic persistent volumes on AWS Elastic Block Store (EBS) using
+# the modern gp3 volume type.
+storageClass:
+  # create: When true, a StorageClass resource named `gp3` is generated.
+  # Set to false if your EKS cluster already has an existing gp3 StorageClass.
+  create: true
+
+  # name: Identifies the StorageClass for PersistentVolumeClaims to bind to.
+  name: gp3
+
+  # isDefault: Marks this StorageClass as the cluster default.
+  isDefault: true
+
+  # provisioner: Must point to the AWS EBS CSI Driver provisioner plugin.
+  provisioner: ebs.csi.aws.com
+
+  # volumeBindingMode: "WaitForFirstConsumer" delays EBS volume creation until a Pod
+  # referencing the PVC is scheduled. This guarantees the EBS volume is created in the
+  # exact AWS Availability Zone (AZ) where the Pod's EC2 worker node lives.
+  volumeBindingMode: WaitForFirstConsumer
+
+  # allowVolumeExpansion: Allows resizing the EBS volume on the fly without downtime.
+  allowVolumeExpansion: true
+
+  # type: AWS EBS volume type (gp3 delivers baseline 3,000 IOPS and 125 MB/s throughput).
+  type: gp3
+
+# ------------------------------------------------------------------------------
+# Backend Workload Configuration (duck-api)
+# ------------------------------------------------------------------------------
+# Statefully manages the Node.js API service backed by a persistent SQLite database.
+backend:
+  # namespace: Target Kubernetes namespace where backend resources are deployed.
+  # Can be overridden or harmonized with .Release.Namespace if deploying single-namespace.
+  namespace: backend
+
+  # replicaCount: Fixed to 1 because SQLite is an embedded single-writer database
+  # and AWS EBS volumes formatted with ReadWriteOnce (RWO) can only attach to one node at a time.
+  replicaCount: 1
+
+  # deploymentStrategy: "Recreate" terminates the existing Pod before launching a new one.
+  # This prevents "Multi-Attach error for volume" during rolling updates on EBS RWO volumes.
+  deploymentStrategy:
+    type: Recreate
+
+  # image: Defines the container image repository, tag, and pull behavior.
+  image:
+    # repository: AWS ECR private repository path.
+    repository: 307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-backend
+    # tag: Container image tag. CI/CD pipelines (e.g. Kargo) override this with Git commit SHAs.
+    tag: latest
+    # pullPolicy: "Always" ensures nodes pull the image on container restarts, preventing stale caches.
+    pullPolicy: Always
+
+  # service: Exposes the backend Pod internally to the frontend service.
+  service:
+    name: duck-api
+    # type: ClusterIP keeps the API internal to the cluster; external clients cannot hit it directly.
+    type: ClusterIP
+    # port: Port exposed on the Kubernetes Service.
+    port: 3000
+    # targetPort: Port the container is listening on.
+    targetPort: 3000
+    protocol: TCP
+
+  # env: Application environment variables passed into the container.
+  env:
+    # PORT: Port the Express/Node.js HTTP server binds to.
+    port: "3000"
+    # DB_PATH: Full path where SQLite stores its persistent database file inside the PVC mount.
+    dbPath: /data/duckstore.db
+
+  # persistence: Controls the PersistentVolumeClaim (PVC) for SQLite database storage.
+  persistence:
+    enabled: true
+    name: duck-data
+    # accessModes: ReadWriteOnce allows read-write access by a single Kubernetes node.
+    accessModes:
+      - ReadWriteOnce
+    # size: Storage capacity allocated on AWS EBS gp3 volume.
+    size: 1Gi
+    # mountPath: Filesystem directory inside the container where the volume is mounted.
+    mountPath: /data
+    # storageClassName: Must match the EBS CSI StorageClass defined above.
+    storageClassName: gp3
+
+  # podSecurityContext: Applies OS-level permissions to the entire Pod.
+  # UID/GID 1000 matches the non-root 'node' user inside official Node.js Alpine/Debian images.
+  podSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    # fsGroup: Ensures files written to the mounted EBS volume are readable/writable by group 1000.
+    fsGroup: 1000
+
+  # securityContext: Hardens individual container process execution.
+  securityContext:
+    # allowPrivilegeEscalation: Blocks processes from gaining more privileges than their parent.
+    allowPrivilegeEscalation: false
+    # readOnlyRootFilesystem: Set to false because SQLite creates lock files alongside the DB.
+    readOnlyRootFilesystem: false
+    # capabilities: Drops all Linux kernel capabilities to minimize the container attack surface.
+    capabilities:
+      drop:
+        - ALL
+
+  # resources: Enforces Kubernetes scheduler guarantees and container runtime limits.
+  resources:
+    requests:
+      # cpu: Guarantees 0.05 CPU cores for baseline execution.
+      cpu: 50m
+      # memory: Guarantees 96Mi of RAM.
+      memory: 96Mi
+    limits:
+      # Memory limit protects the EC2 host from out-of-memory (OOM) exhaustion.
+      memory: 256Mi
+      # NOTE: CPU limits are intentionally omitted to avoid Linux Completely Fair Scheduler (CFS)
+      # quota throttling during bursts while the host node has spare cycles available.
+
+  # probes: Kubernetes health checks ensuring zero-downtime and automatic recovery.
+  probes:
+    # startupProbe: Shields slow initialization during DB schema migrations before liveness checks kick in.
+    startup:
+      path: /api/health
+      port: http
+      periodSeconds: 5
+      failureThreshold: 6
+    # livenessProbe: Restarts the container if the Node.js event loop hangs or deadlocks.
+    liveness:
+      path: /api/health
+      port: http
+      periodSeconds: 15
+      failureThreshold: 3
+    # readinessProbe: Removes Pod from Service endpoints if it is temporarily overwhelmed.
+    readiness:
+      path: /api/health
+      port: http
+      periodSeconds: 10
+      failureThreshold: 2
+
+# ------------------------------------------------------------------------------
+# Frontend Workload Configuration (duck-web)
+# ------------------------------------------------------------------------------
+# Manages the stateless Node.js client-facing web application.
+frontend:
+  # namespace: Target Kubernetes namespace where frontend resources are deployed.
+  namespace: frontend
+
+  # replicaCount: 2 replicas distributed across nodes for high availability and load distribution.
+  replicaCount: 2
+
+  # deploymentStrategy: "RollingUpdate" achieves zero-downtime upgrades.
+  deploymentStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 ensures that all desired replicas remain healthy before terminating old pods.
+      maxUnavailable: 0
+      # maxSurge: 1 creates 1 temporary extra pod during rollout to smoothly absorb incoming traffic.
+      maxSurge: 1
+
+  # image: Frontend container image metadata.
+  image:
+    repository: 307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-frontend
+    tag: latest
+    pullPolicy: Always
+
+  # service: Exposes the frontend web pods to the AWS Application Load Balancer.
+  service:
+    name: duck-web
+    type: ClusterIP
+    # port: Port exposed on the ClusterIP Service (80 for standard HTTP).
+    port: 80
+    # targetPort: Port the frontend Express server listens on (3000).
+    targetPort: 3000
+    protocol: TCP
+
+  # env: Application runtime environment variables.
+  env:
+    port: "3000"
+    # backendUrl: Internal cluster DNS URL for communicating with the backend API.
+    # If left empty, the template dynamically builds:
+    # http://{{ .Values.backend.service.name }}.{{ .Values.backend.namespace }}.svc.cluster.local:{{ .Values.backend.service.port }}
+    backendUrl: ""
+
+  # podSecurityContext: Restricts execution to non-root UID 1000.
+  podSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+
+  # securityContext: Read-only container filesystem protection.
+  securityContext:
+    allowPrivilegeEscalation: false
+    # readOnlyRootFilesystem: true prevents attackers from altering binaries or installing rootkits.
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # tmpVolume: Mounts an ephemeral in-memory emptyDir at /tmp for runtime caches and scratch files.
+  tmpVolume:
+    mountPath: /tmp
+
+  # resources: Frontend compute allocation.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+  # probes: Health checking endpoints on the web service.
+  probes:
+    startup:
+      path: /healthz
+      port: http
+      periodSeconds: 3
+      failureThreshold: 10
+    liveness:
+      path: /healthz
+      port: http
+      periodSeconds: 15
+      failureThreshold: 3
+    readiness:
+      path: /healthz
+      port: http
+      periodSeconds: 10
+      failureThreshold: 2
+
+# ------------------------------------------------------------------------------
+# Ingress Configuration (AWS Load Balancer Controller)
+# ------------------------------------------------------------------------------
+# Directs public internet traffic from an AWS Application Load Balancer (ALB)
+# directly into the frontend Pods using TargetGroup IP mode.
+ingress:
+  # enabled: Set to true to create the Ingress resource.
+  enabled: true
+
+  # name: Name of the Ingress resource in Kubernetes.
+  name: duckstore
+
+  # className: "alb" tells the AWS Load Balancer Controller to reconcile this ingress.
+  className: alb
+
+  # annotations: Key-value metadata instructing AWS Load Balancer Controller behavior.
+  annotations:
+    # internet-facing provisions public IPv4 IPs for the AWS ALB.
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # target-type: "ip" routes traffic directly to Pod IPs via VPC CNI (bypassing NodePort hops).
+    alb.ingress.kubernetes.io/target-type: ip
+    # listen-ports: Binds ALB listener to standard HTTP port 80.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # healthcheck-path: Route evaluated by the ALB Target Group to determine Pod health.
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+
+  # paths: Routing table rules.
+  paths:
+    - path: /
+      pathType: Prefix
+      # backendService: Directs root traffic to the frontend web service.
+      backendService: duck-web
+      backendPort: 80
+
+# ------------------------------------------------------------------------------
+# NetworkPolicy Configuration (East-West Traffic Hardening)
+# ------------------------------------------------------------------------------
+# Denies arbitrary ingress traffic into the backend namespace, strictly allowing
+# incoming TCP connections on port 3000 only from Pods matching 'app: duck-web'
+# inside the 'frontend' namespace.
+networkPolicy:
+  # enabled: Set to true to enforce network isolation (requires AWS VPC CNI Network Policy agent).
+  enabled: true
+  name: allow-frontend-only

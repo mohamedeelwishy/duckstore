@@ -1,0 +1,137 @@
+{{/*
+==============================================================================
+templates/frontend.yaml - Frontend Workload & Networking
+==============================================================================
+This template defines the client-facing Web microservice:
+  1. Deployment: Highly available (2 replicas), stateless Express.js web server
+     featuring zero-downtime rolling updates, read-only root filesystem,
+     and automatic discovery of the backend API service.
+  2. Service: ClusterIP service exposing the web server on HTTP port 80 for
+     AWS Application Load Balancer target routing.
+==============================================================================
+*/}}
+
+{{/* =========================================================================
+1. Deployment (duck-web Frontend Service)
+=========================================================================
+Why: Manages stateless web frontend pods.
+Injection:
+  - Replicas & RollingUpdate: .Values.frontend.replicaCount & strategy
+  - Image Repository & Tag: .Values.frontend.image.*
+  - Backend URL: Automatically computed via helper template 'duckstore.backendUrl'
+  - Probes & Resources: .Values.frontend.probes & .Values.frontend.resources
+========================================================================= */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.frontend.service.name }}
+  namespace: {{ .Values.frontend.namespace }}
+  labels:
+    {{- include "duckstore.frontend.labels" . | nindent 4 }}
+spec:
+  # Desired replicas for high availability across AWS Availability Zones
+  replicas: {{ .Values.frontend.replicaCount }}
+  # Zero-downtime rolling update strategy
+  strategy:
+    type: {{ .Values.frontend.deploymentStrategy.type }}
+    rollingUpdate:
+      # maxUnavailable: 0 ensures full capacity is maintained at all times during deploys
+      maxUnavailable: {{ .Values.frontend.deploymentStrategy.rollingUpdate.maxUnavailable }}
+      # maxSurge: 1 creates a new pod before terminating old ones
+      maxSurge: {{ .Values.frontend.deploymentStrategy.rollingUpdate.maxSurge }}
+  selector:
+    matchLabels:
+      app: duck-web
+  template:
+    metadata:
+      labels:
+        {{- include "duckstore.frontend.labels" . | nindent 8 }}
+    spec:
+      # Pod-level security context: Non-root user (UID/GID 1000)
+      securityContext:
+        runAsUser: {{ .Values.frontend.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.frontend.podSecurityContext.runAsGroup }}
+      containers:
+        - name: web
+          # Container image string resolved dynamically
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - name: http
+              # Port Node.js listens on internally
+              containerPort: {{ .Values.frontend.service.targetPort }}
+              protocol: {{ .Values.frontend.service.protocol }}
+          env:
+            - name: PORT
+              value: {{ .Values.frontend.env.port | quote }}
+            # Injected backend URL: points to internal DNS of backend ClusterIP service
+            - name: BACKEND_URL
+              value: {{ include "duckstore.backendUrl" . | quote }}
+            # Downward API: injects current Pod name for diagnostic tracing and header tracking
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # Resource requests and limits
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          # Health Probes for container lifecycle management
+          startupProbe:
+            httpGet:
+              path: {{ .Values.frontend.probes.startup.path }}
+              port: {{ .Values.frontend.probes.startup.port }}
+            periodSeconds: {{ .Values.frontend.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.frontend.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.frontend.probes.liveness.path }}
+              port: {{ .Values.frontend.probes.liveness.port }}
+            periodSeconds: {{ .Values.frontend.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.frontend.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.frontend.probes.readiness.path }}
+              port: {{ .Values.frontend.probes.readiness.port }}
+            periodSeconds: {{ .Values.frontend.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.frontend.probes.readiness.failureThreshold }}
+          # Security hardening: Read-only container root filesystem
+          securityContext:
+            allowPrivilegeEscalation: {{ .Values.frontend.securityContext.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.frontend.securityContext.readOnlyRootFilesystem }}
+            capabilities:
+              {{- toYaml .Values.frontend.securityContext.capabilities | nindent 14 }}
+          # In-memory ephemeral volume for scratch space (/tmp)
+          volumeMounts:
+            - name: tmp
+              mountPath: {{ .Values.frontend.tmpVolume.mountPath }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+
+{{/* =========================================================================
+2. Service (duck-web ClusterIP Service)
+=========================================================================
+Why: Exposes the frontend web pods internally on port 80, serving as the target
+backend for the AWS Application Load Balancer Ingress.
+Injection: Driven by .Values.frontend.service.*
+========================================================================= */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.frontend.service.name }}
+  namespace: {{ .Values.frontend.namespace }}
+  labels:
+    {{- include "duckstore.frontend.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.frontend.service.type }}
+  # Routes HTTP traffic to pods matching 'app: duck-web'
+  selector:
+    app: duck-web
+  ports:
+    - name: http
+      # Port exposed on the service (port 80)
+      port: {{ .Values.frontend.service.port }}
+      # Target port on the container (port 3000)
+      targetPort: {{ .Values.frontend.service.targetPort }}
+      protocol: {{ .Values.frontend.service.protocol }}

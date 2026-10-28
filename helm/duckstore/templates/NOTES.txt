@@ -1,0 +1,49 @@
+{{/*
+==============================================================================
+NOTES.txt - Post-Installation Educational Guide
+==============================================================================
+Rendered in the terminal immediately after `helm install` or `helm upgrade`.
+Provides the operator with exact commands to inspect the deployed resources,
+retrieve endpoints, and monitor rollout progress.
+==============================================================================
+*/}}
+==============================================================================
+  ____             _     ____  _
+ |  _ \ _   _  ___| | __/ ___|| |_ ___  _ __ ___
+ | | | | | | |/ __| |/ /\___ \| __/ _ \| '__/ _ \
+ | |_| | |_| | (__|   <  ___) | || (_) | | |  __/
+ |____/ \__,_|\___|_|\_\|____/ \__\___/|_|  \___|
+==============================================================================
+
+Thank you for installing {{ .Chart.Name }} (v{{ .Chart.Version }})!
+
+1. WORKLOAD STATUS:
+   Check the status of your microservices:
+
+   # Backend (duck-api in namespace: {{ .Values.backend.namespace }}):
+   kubectl get pods,svc,pvc -n {{ .Values.backend.namespace }} -l app.kubernetes.io/part-of=duckstore
+
+   # Frontend (duck-web in namespace: {{ .Values.frontend.namespace }}):
+   kubectl get pods,svc,ingress -n {{ .Values.frontend.namespace }} -l app.kubernetes.io/part-of=duckstore
+
+2. PERSISTENCE & STORAGE:
+   The backend SQLite database is bound to:
+   - StorageClass: {{ .Values.storageClass.name }} (AWS EBS CSI Driver)
+   - PVC: {{ .Values.backend.persistence.name }} ({{ .Values.backend.persistence.size }})
+   - Mount: {{ .Values.backend.persistence.mountPath }}
+
+3. EXTERNAL ACCESS (AWS ALB):
+{{- if .Values.ingress.enabled }}
+   An AWS Application Load Balancer has been requested.
+   Retrieve the external ALB DNS address using:
+
+   kubectl get ingress {{ .Values.ingress.name }} -n {{ .Values.frontend.namespace }} -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" && echo
+{{- else }}
+   Ingress is currently disabled in values.yaml. Access frontend via port-forward:
+   kubectl port-forward svc/{{ .Values.frontend.service.name }} 8080:{{ .Values.frontend.service.port }} -n {{ .Values.frontend.namespace }}
+{{- end }}
+
+4. INTERNAL CONNECTIVITY:
+   The frontend communicates with the backend via Kubernetes internal DNS:
+   {{ include "duckstore.backendUrl" . }}
+==============================================================================
