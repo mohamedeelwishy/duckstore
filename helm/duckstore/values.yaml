@@ -15,6 +15,16 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
+# Namespace Provisioning
+# ------------------------------------------------------------------------------
+# Manages explicit creation of the multi-tier backend and frontend namespaces.
+# Required because Argo CD's CreateNamespace=true only creates the application's
+# root destination namespace (e.g. default), not workload-specific namespaces.
+namespaces:
+  # create: Set to true to automatically provision the namespaces during release.
+  create: true
+
+# ------------------------------------------------------------------------------
 # StorageClass Configuration (AWS EBS CSI Driver)
 # ------------------------------------------------------------------------------
 # Provisions dynamic persistent volumes on AWS Elastic Block Store (EBS) using
