@@ -1,0 +1,44 @@
+# ==============================================================================
+# Chart.yaml - Helm Chart Metadata
+# ==============================================================================
+# This file provides core metadata about the Helm chart. Helm reads this file to
+# understand chart dependencies, versioning, description, and API specifications.
+# ==============================================================================
+
+# apiVersion: v2 is mandatory for Helm 3 charts.
+# (v1 was used in Helm 2, which is now deprecated).
+apiVersion: v2
+
+# The name of the chart. Must match the directory name (e.g., helm/duckstore).
+name: duckstore
+
+# A clear, human-readable summary of what this Helm package provides.
+description: Production-grade Helm chart for DuckStore microservices (Node.js API & Web) on Amazon EKS
+
+# Type defines the purpose: "application" represents deployable workloads,
+# whereas "library" provides helper templates for other charts.
+type: application
+
+# The version of THIS Helm chart. Follows Semantic Versioning (SemVer 2).
+# Increment this whenever you modify chart templates, helper definitions, or values schema.
+version: 0.1.0
+
+# The version of the underlying application software being deployed (DuckStore suite).
+# This is independent of the chart version and can reflect a Git tag, SemVer, or release name.
+appVersion: "1.0.0"
+
+# Informative keywords to make the chart easily discoverable in Helm registries/repositories.
+keywords:
+  - duckstore
+  - microservices
+  - nodejs
+  - eks
+  - aws
+  - gitops
+  - kargo
+  - argocd
+
+# Maintainer contact details for ownership and support tracking.
+maintainers:
+  - name: Mohamed Elwishy
+    email: mohamed@example.com
