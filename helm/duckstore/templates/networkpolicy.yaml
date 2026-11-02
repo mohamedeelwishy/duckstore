@@ -1,0 +1,40 @@
+{{/*
+==============================================================================
+templates/networkpolicy.yaml - East-West Network Security Hardening
+==============================================================================
+This template defines a Kubernetes NetworkPolicy in the backend namespace.
+It enforces least-privilege zero-trust network isolation by:
+  1. Denying all arbitrary traffic to the backend API/database by default.
+  2. Whitelisting incoming TCP traffic on port 3000 solely from pods matching
+     the label 'app: duck-web' situated in the frontend namespace.
+==============================================================================
+*/}}
+
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.networkPolicy.name }}
+  namespace: {{ .Values.backend.namespace }}
+  labels:
+    {{- include "duckstore.backend.labels" . | nindent 4 }}
+spec:
+  # Empty podSelector selects ALL pods in the backend namespace (duck-api)
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Match only the namespace where the frontend is deployed
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.frontend.namespace }}
+          # Within that namespace, match only pods with the frontend app label
+          podSelector:
+            matchLabels:
+              app: duck-web
+      ports:
+        # Strictly allow only the backend service port (TCP 3000)
+        - protocol: TCP
+          port: {{ .Values.backend.service.port }}
+{{- end }}

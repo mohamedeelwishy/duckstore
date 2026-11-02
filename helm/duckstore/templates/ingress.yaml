@@ -1,0 +1,43 @@
+{{/*
+==============================================================================
+templates/ingress.yaml - AWS Application Load Balancer Ingress
+==============================================================================
+This template defines the Kubernetes Ingress resource reconciled by the
+AWS Load Balancer Controller. It automatically creates and configures an external
+AWS Application Load Balancer (ALB), Target Groups, and Listener Rules.
+==============================================================================
+*/}}
+
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.ingress.name }}
+  # Placed in the frontend namespace to route to the duck-web service
+  namespace: {{ .Values.frontend.namespace }}
+  labels:
+    {{- include "duckstore.frontend.labels" . | nindent 4 }}
+  annotations:
+    # Injects all AWS Load Balancer Controller annotations from values.yaml:
+    # - alb.ingress.kubernetes.io/scheme: internet-facing
+    # - alb.ingress.kubernetes.io/target-type: ip
+    # - alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # - alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  # Ingress class name recognized by the AWS Load Balancer Controller
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - http:
+        paths:
+          # Iterates through configurable path routing definitions in values.yaml
+          {{- range .Values.ingress.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ .backendService }}
+                port:
+                  number: {{ .backendPort }}
+          {{- end }}
+{{- end }}

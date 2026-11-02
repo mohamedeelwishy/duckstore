@@ -13,10 +13,14 @@ spec:
   source:
     repoURL: https://github.com/mohamedeelwishy/duckstore.git
     targetRevision: main
-    path: k8s
+    # Point directly to the structured Helm chart directory instead of legacy raw manifests
+    path: helm/duckstore
+    helm:
+      # Optional: Explicit release name to match the application name
+      releaseName: duckstore
   destination:
     server: https://kubernetes.default.svc
-    # Each manifest in k8s/ defines its own explicit namespace (frontend or backend)
+    # Each template in helm/duckstore defines its explicit target namespace (frontend or backend)
     namespace: default
   syncPolicy:
     automated:

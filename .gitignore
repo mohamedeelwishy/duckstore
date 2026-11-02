@@ -11,3 +11,9 @@ app/node_modules/
 app/dist/
 app/build/
 app/.env
+
+# Kargo & Local Secrets
+kargo/secrets.yaml
+
+# IDE
+.vscode/

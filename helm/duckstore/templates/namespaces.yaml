@@ -1,0 +1,50 @@
+{{/*
+==============================================================================
+templates/namespaces.yaml - Explicit Multi-Tier Namespace Provisioning
+==============================================================================
+Why this file exists:
+In multi-tier Kubernetes architectures, the backend API/database and frontend
+web services are isolated in separate namespaces (e.g., 'backend' and 'frontend')
+for zero-trust security, RBAC scoping, and NetworkPolicy boundary enforcement.
+
+While Argo CD's sync policy includes `CreateNamespace=true`, this flag ONLY
+provisions the single destination namespace specified under:
+  Application.spec.destination.namespace (e.g., 'default' or 'duckstore')
+
+It does NOT automatically create any custom namespaces declared in child
+manifests (`metadata.namespace: backend` or `frontend`). Without this template,
+Argo CD or Helm fails with "namespaces 'backend' not found" upon fresh sync.
+
+This template provisions both namespaces prior to deploying workloads,
+injecting standard Helm tracking labels and the canonical
+`kubernetes.io/metadata.name` label required by NetworkPolicy selectors.
+==============================================================================
+*/}}
+
+{{- if .Values.namespaces.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  # Injected backend namespace name (default: backend)
+  name: {{ .Values.backend.namespace }}
+  labels:
+    # Standard Helm chart and release metadata labels
+    {{- include "duckstore.labels" . | nindent 4 }}
+    # Canonical namespace name label for NetworkPolicy namespaceSelectors
+    kubernetes.io/metadata.name: {{ .Values.backend.namespace }}
+    app.kubernetes.io/component: backend
+{{- if ne .Values.backend.namespace .Values.frontend.namespace }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  # Injected frontend namespace name (default: frontend)
+  name: {{ .Values.frontend.namespace }}
+  labels:
+    # Standard Helm chart and release metadata labels
+    {{- include "duckstore.labels" . | nindent 4 }}
+    # Canonical namespace name label for NetworkPolicy namespaceSelectors
+    kubernetes.io/metadata.name: {{ .Values.frontend.namespace }}
+    app.kubernetes.io/component: frontend
+{{- end }}
+{{- end }}

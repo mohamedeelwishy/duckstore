@@ -1,0 +1,195 @@
+{{/*
+==============================================================================
+templates/backend.yaml - Backend Workload, Storage & Networking
+==============================================================================
+This template defines all Kubernetes resources required by the DuckStore API
+microservice:
+  1. StorageClass: AWS EBS gp3 volume provisioner (optional / toggleable)
+  2. PersistentVolumeClaim: Dedicated 1Gi volume for the SQLite database
+  3. Deployment: Single-replica duck-api container with health probes
+  4. Service: Internal ClusterIP service exposing the API on port 3000
+==============================================================================
+*/}}
+
+{{/* =========================================================================
+1. StorageClass (AWS EBS CSI Driver gp3)
+=========================================================================
+Why: Defines how EBS storage is dynamically carved out from AWS.
+Injection: Only rendered if .Values.storageClass.create is set to true.
+========================================================================= */}}
+{{- if .Values.storageClass.create }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClass.name }}
+  annotations:
+    # Sets this StorageClass as default if configured in values.yaml
+    storageclass.kubernetes.io/is-default-class: {{ .Values.storageClass.isDefault | quote }}
+  labels:
+    {{- include "duckstore.labels" . | nindent 4 }}
+# AWS EBS CSI Driver plugin provisioner identifier
+provisioner: {{ .Values.storageClass.provisioner }}
+# WaitForFirstConsumer prevents AZ binding mismatches by waiting until a pod is scheduled
+volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
+# Enables resizing the volume dynamically without pod disruption
+allowVolumeExpansion: {{ .Values.storageClass.allowVolumeExpansion }}
+parameters:
+  # gp3 volume type delivers reliable baseline IOPS and throughput
+  type: {{ .Values.storageClass.type }}
+---
+{{- end }}
+
+{{/* =========================================================================
+2. PersistentVolumeClaim (SQLite Database Storage)
+=========================================================================
+Why: Requests a dedicated block storage volume from the EBS CSI Driver to hold
+the SQLite database file (/data/duckstore.db) across pod restarts.
+Injection: Uses .Values.backend.persistence.* values.
+========================================================================= */}}
+{{- if .Values.backend.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.backend.persistence.name }}
+  namespace: {{ .Values.backend.namespace }}
+  labels:
+    {{- include "duckstore.backend.labels" . | nindent 4 }}
+spec:
+  # ReadWriteOnce: Volume can be mounted as read-write by a single node at any time
+  accessModes:
+    {{- toYaml .Values.backend.persistence.accessModes | nindent 4 }}
+  # Binds specifically to the gp3 StorageClass
+  storageClassName: {{ .Values.backend.persistence.storageClassName }}
+  resources:
+    requests:
+      # Injected storage capacity (default 1Gi)
+      storage: {{ .Values.backend.persistence.size }}
+---
+{{- end }}
+
+{{/* =========================================================================
+3. Deployment (duck-api Backend Service)
+=========================================================================
+Why: Manages the lifecycle of the Node.js API server.
+Injection:
+  - Replicas & Strategy: .Values.backend.replicaCount & .Values.backend.deploymentStrategy
+  - Container Image: Combined from .Values.backend.image.repository and tag
+  - Environment: .Values.backend.env.*
+  - Security & Probes: .Values.backend.securityContext & .Values.backend.probes
+========================================================================= */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.backend.service.name }}
+  namespace: {{ .Values.backend.namespace }}
+  labels:
+    {{- include "duckstore.backend.labels" . | nindent 4 }}
+spec:
+  # Number of desired pod instances (kept at 1 for SQLite single-writer safety)
+  replicas: {{ .Values.backend.replicaCount }}
+  # Recreate strategy ensures old pod is destroyed and volume unmounted before new pod starts
+  strategy:
+    type: {{ .Values.backend.deploymentStrategy.type }}
+  selector:
+    matchLabels:
+      app: duck-api
+  template:
+    metadata:
+      labels:
+        {{- include "duckstore.backend.labels" . | nindent 8 }}
+    spec:
+      # Pod Security Context: Run as non-root user (node UID 1000)
+      securityContext:
+        runAsUser: {{ .Values.backend.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.backend.podSecurityContext.runAsGroup }}
+        # fsGroup ensures mounted EBS volume files are owned by the application group
+        fsGroup: {{ .Values.backend.podSecurityContext.fsGroup }}
+      containers:
+        - name: api
+          # Injected container image string: <ecr-repo>:<git-sha-or-latest>
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          # Image pull policy (Always prevents running stale cached images)
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - name: http
+              # Port exposed by the Node.js application process
+              containerPort: {{ .Values.backend.service.targetPort }}
+              protocol: {{ .Values.backend.service.protocol }}
+          env:
+            # Server port injected from values.yaml
+            - name: PORT
+              value: {{ .Values.backend.env.port | quote }}
+            # Path to persistent SQLite DB file inside mounted EBS volume
+            - name: DB_PATH
+              value: {{ .Values.backend.env.dbPath | quote }}
+          {{- if .Values.backend.persistence.enabled }}
+          volumeMounts:
+            # Mount the persistent storage volume at /data
+            - name: data
+              mountPath: {{ .Values.backend.persistence.mountPath }}
+          {{- end }}
+          # Resource requests and limits
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          # Health Checks & Probes
+          # Startup probe allows time for database schema bootstrap before liveness checks
+          startupProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.startup.path }}
+              port: {{ .Values.backend.probes.startup.port }}
+            periodSeconds: {{ .Values.backend.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.backend.probes.startup.failureThreshold }}
+          # Liveness probe restarts frozen or deadlocked container instances
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.liveness.path }}
+              port: {{ .Values.backend.probes.liveness.port }}
+            periodSeconds: {{ .Values.backend.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.backend.probes.liveness.failureThreshold }}
+          # Readiness probe ensures traffic is only routed to fully initialized pods
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.readiness.path }}
+              port: {{ .Values.backend.probes.readiness.port }}
+            periodSeconds: {{ .Values.backend.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.backend.probes.readiness.failureThreshold }}
+          # Container process isolation hardening
+          securityContext:
+            allowPrivilegeEscalation: {{ .Values.backend.securityContext.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.backend.securityContext.readOnlyRootFilesystem }}
+            capabilities:
+              {{- toYaml .Values.backend.securityContext.capabilities | nindent 14 }}
+      {{- if .Values.backend.persistence.enabled }}
+      volumes:
+        # Binds the PVC created above to the container's volumeMounts
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.backend.persistence.name }}
+      {{- end }}
+---
+
+{{/* =========================================================================
+4. Service (duck-api ClusterIP Service)
+=========================================================================
+Why: Provides a stable internal DNS endpoint (duck-api.backend.svc.cluster.local:3000)
+so the frontend web pods can reliably communicate with the backend.
+Injection: Driven by .Values.backend.service.*
+========================================================================= */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.backend.service.name }}
+  namespace: {{ .Values.backend.namespace }}
+  labels:
+    {{- include "duckstore.backend.labels" . | nindent 4 }}
+spec:
+  # ClusterIP: Only reachable from within the Kubernetes cluster
+  type: {{ .Values.backend.service.type }}
+  # Routes traffic to pods labeled 'app: duck-api'
+  selector:
+    app: duck-api
+  ports:
+    - name: http
+      port: {{ .Values.backend.service.port }}
+      targetPort: {{ .Values.backend.service.targetPort }}
+      protocol: {{ .Values.backend.service.protocol }}

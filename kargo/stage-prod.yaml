@@ -30,30 +30,24 @@ spec:
               - branch: main
                 path: ./src
 
-        # Step 2: Update container image tag inside k8s/10-backend.yaml
+        # Step 2: Update container image tags inside Helm values.yaml
         - uses: yaml-update
           config:
-            path: ./src/k8s/10-backend.yaml
+            path: ./src/helm/duckstore/values.yaml
             updates:
-              - key: spec.template.spec.containers.0.image
-                value: ${{ imageFrom(vars.backendImageRepo).RepoURL }}:${{ imageFrom(vars.backendImageRepo).Tag }}
+              - key: backend.image.tag
+                value: ${{ imageFrom(vars.backendImageRepo).Tag }}
+              - key: frontend.image.tag
+                value: ${{ imageFrom(vars.frontendImageRepo).Tag }}
 
-        # Step 3: Update container image tag inside k8s/20-frontend.yaml
-        - uses: yaml-update
-          config:
-            path: ./src/k8s/20-frontend.yaml
-            updates:
-              - key: spec.template.spec.containers.0.image
-                value: ${{ imageFrom(vars.frontendImageRepo).RepoURL }}:${{ imageFrom(vars.frontendImageRepo).Tag }}
-
-        # Step 4: Commit manifest changes with [skip ci] to eliminate CI loops
+        # Step 3: Commit values.yaml changes with [skip ci] to prevent CI loops
         - uses: git-commit
           as: commit
           config:
             path: ./src
             message: "chore(kargo): promote duckstore freight to prod [skip ci]"
 
-        # Step 5: Push updated manifests back to the main branch
+        # Step 4: Push updated Helm values back to the main branch
         - uses: git-push
           config:
             path: ./src
