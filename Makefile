@@ -3,7 +3,7 @@ REGION  := $(shell $(TF) output -raw region 2>/dev/null || echo eu-west-1)
 CLUSTER := $(shell $(TF) output -raw eks_cluster_name 2>/dev/null || echo duckstore-prod-eks)
 
 .DEFAULT_GOAL := help
-.PHONY: help init plan apply destroy output kubeconfig status install-argocd install-kargo apply-gitops dev-backend dev-frontend
+.PHONY: help init plan apply destroy output kubeconfig status install-argocd install-image-updater apply-gitops dev-backend dev-frontend
 
 help: ## Show help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -36,22 +36,19 @@ status: ## Show cluster workload status
 	@echo "---"
 	kubectl get pods,svc,pvc,storageclass -n backend
 
-# --- GitOps Bootstrapping (Argo CD & Kargo) -----------------------------------
+# --- GitOps Bootstrapping (Argo CD & Argo CD Image Updater) ------------------
 
 install-argocd: ## Install Argo CD into the cluster
 	kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-install-kargo: ## Install Kargo via Helm
-	helm repo add akuity https://akuity.github.io/kargo-charts
-	helm repo update
-	helm upgrade --install kargo akuity/kargo --namespace kargo --create-namespace
+install-image-updater: ## Install Argo CD Image Updater (watches ECR directly, replaces Kargo)
+	kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/manifests/install.yaml
+	@echo "Next: configure AWS credentials for the image-updater ServiceAccount (IRSA recommended)"
+	@echo "so it can read ECR, and a Git write-back credentials secret -- see README.md."
 
-apply-gitops: ## Apply Kargo and Argo CD manifests
-	kubectl apply -f kargo/project.yaml
-	@if [ -f kargo/secrets.yaml ]; then kubectl apply -f kargo/secrets.yaml; else echo "Note: kargo/secrets.yaml not found. Copy from kargo/secrets.yaml.template"; fi
-	kubectl apply -f kargo/warehouse.yaml
-	kubectl apply -f kargo/stage-prod.yaml
+apply-gitops: ## Apply the Argo CD Application (Image Updater annotations are in argocd/application.yaml)
 	kubectl apply -f argocd/application.yaml
 
 # --- Local Development -------------------------------------------------------
