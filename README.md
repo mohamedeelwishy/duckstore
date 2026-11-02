@@ -189,6 +189,12 @@ Monitor execution:
    kubectl get pods -n frontend
    ```
 
+Or run the whole check in one shot (or `make check-gitops`):
+```bash
+./scripts/check-gitops.sh
+```
+Verifies cluster connectivity, Argo CD core component health, Image Updater's deployment status and recent logs (flagging ECR/Git auth errors specifically), the `duckstore` Application's sync/health status, and workload pod readiness -- with a pass/fail summary and a non-zero exit code if anything's wrong.
+
 ### 6. Teardown
 
 To decommission all cloud resources and prevent ongoing costs:

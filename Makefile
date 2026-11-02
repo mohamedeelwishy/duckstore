@@ -3,7 +3,7 @@ REGION  := $(shell $(TF) output -raw region 2>/dev/null || echo eu-west-1)
 CLUSTER := $(shell $(TF) output -raw eks_cluster_name 2>/dev/null || echo duckstore-prod-eks)
 
 .DEFAULT_GOAL := help
-.PHONY: help init plan apply destroy output kubeconfig status install-argocd install-image-updater apply-gitops dev-backend dev-frontend
+.PHONY: help init plan apply destroy output kubeconfig status check-gitops install-argocd install-image-updater apply-gitops dev-backend dev-frontend
 
 help: ## Show help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -35,6 +35,9 @@ status: ## Show cluster workload status
 	kubectl get pods,svc,ingress -n frontend
 	@echo "---"
 	kubectl get pods,svc,pvc,storageclass -n backend
+
+check-gitops: ## Verify Argo CD + Image Updater are healthy and actually syncing
+	@./scripts/check-gitops.sh
 
 # --- GitOps Bootstrapping (Argo CD & Argo CD Image Updater) ------------------
 
