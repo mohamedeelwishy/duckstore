@@ -1,6 +1,6 @@
 # AWS EKS Infrastructure & GitOps Continuous Promotion Pipeline
 
-An enterprise-grade decoupled architecture provisioning a highly available Amazon EKS cluster on AWS using Terraform, with containerized microservices published to AWS ECR and continuously promoted via Kargo and Argo CD.
+An enterprise-grade decoupled architecture provisioning a highly available Amazon EKS cluster on AWS using Terraform, with containerized microservices published to AWS ECR and continuously promoted via Argo CD Image Updater and Argo CD.
 
 ---
 
@@ -21,11 +21,11 @@ The system decouples infrastructure provisioning, continuous integration, and co
                (duckstore-backend & duckstore-frontend)
                                 │
                                 ▼
-                    [ Kargo Continuous Promotion ]
-                      ├── 1. Warehouse: monitors ECR digests
-                      ├── 2. Stage (prod): clones Git repo
-                      ├── 3. yaml-update: updates helm/duckstore/values.yaml
-                      └── 4. git-commit & push [skip ci]
+                 [ Argo CD Image Updater ]
+                      ├── Polls both ECR repos directly (image-list annotation)
+                      ├── digest strategy tracks the :latest tag's digest
+                      ├── Resolves new tag@digest for helm/duckstore/values.yaml
+                      └── write-back-method: git -- commits to main
                                 │
                                 ▼
                      [ Git Repository (main) ]
@@ -57,15 +57,17 @@ The system decouples infrastructure provisioning, continuous integration, and co
    - **Ingress (`templates/ingress.yaml`):** AWS Application Load Balancer via AWS Load Balancer Controller (`ingressClassName: alb`, `scheme: internet-facing`, `target-type: ip`) routing root HTTP traffic `/` directly to the `duck-web` service with automated health checking on `/healthz`.
 
 3. **Continuous Integration (GitHub Actions in `.github/workflows/deploy.yml`)**
-   - **Infinite Loop Prevention:** Configured `paths-ignore` for `helm/**`, `kargo/**`, `argocd/**`, and documentation (`*.md`), preventing GitOps promotion commits from triggering redundant CI image builds.
+   - **Infinite Loop Prevention:** Configured `paths-ignore` for `helm/**`, `argocd/**`, and documentation (`*.md`), preventing GitOps promotion commits from triggering redundant CI image builds.
    - **`validate` job:** Runs static syntax checks on Node.js backend/frontend (`node --check`) and validates Terraform code (`terraform fmt -check`, `terraform validate`).
    - **`build-and-push` job:** Compiles multi-stage container images, authenticates to AWS ECR, and pushes images tagged with both the immutable Git commit SHA (`${{ github.sha }}`) and `latest`.
 
-4. **Continuous Promotion & GitOps (Kargo & Argo CD)**
-   - **Kargo (`kargo/`):**
-     - `duckstore-warehouse`: Subscribes to newly pushed container image digests from both ECR repositories.
-     - `prod` Stage: Executes automated promotion steps (`git-clone`, `yaml-update` for `helm/duckstore/values.yaml` with the discovered freight image tags, and `git-commit` with `[skip ci]` followed by `git-push` to `main`).
-     - `secrets.yaml`: Configures repository access tokens and ECR image registry credentials labeled for Kargo (`kargo.akuity.io/cred-type: git` and `image`).
+4. **Continuous Promotion & GitOps (Argo CD Image Updater & Argo CD)**
+   - **Argo CD Image Updater (annotations on `argocd/application.yaml`):**
+     - `image-list`: subscribes directly to both `duckstore-backend` and `duckstore-frontend` ECR repositories -- no separate controller/CRDs beyond the Image Updater deployment itself.
+     - `update-strategy: digest` tracks the `:latest` tag's digest (CI always pushes both `:<sha>` and `:latest`), so a new push is detected even though the tag string never changes.
+     - `helm.image-name` / `helm.image-tag`: maps each tracked image to the exact Helm value keys (`backend.image.repository`/`.tag`, `frontend.image.repository`/`.tag`) to update.
+     - `write-back-method: git` + `git-branch: main`: commits the resolved `tag@digest` into `helm/duckstore/values.yaml` on `main`, keeping Git as the single source of truth and the change auditable in `git log`.
+     - Requires AWS credentials on the Image Updater ServiceAccount to read ECR (IRSA recommended) and Git write credentials for the push-back commit.
    - **Argo CD (`argocd/application.yaml`):**
      - Declarative `Application` monitoring the `helm/duckstore` directory on `main`.
      - Continuous auto-synchronization with `prune: true`, `selfHeal: true`, and exponential retry backoff.
@@ -77,7 +79,7 @@ The system decouples infrastructure provisioning, continuous integration, and co
 - **Terraform:** `>= 1.5.0`
 - **AWS CLI:** `v2` configured with administrative permissions.
 - **kubectl:** `>= 1.30.0`
-- **Helm:** `>= 3.12.0` (for installing Argo CD and Kargo).
+- **Helm:** not required for GitOps bootstrap itself (Argo CD / Image Updater install via raw manifests), but used by the `helm/duckstore` chart Argo CD renders.
 - **Node.js:** `>= 22.0.0` (for local development and validation).
 - **Docker:** `>= 24.0` (for local container builds).
 - **GitHub Repository Secrets (for CI/CD):**
@@ -125,9 +127,9 @@ aws eks update-kubeconfig \
 kubectl get nodes -o wide
 ```
 
-### 3. Bootstrap GitOps (Argo CD & Kargo)
+### 3. Bootstrap GitOps (Argo CD & Argo CD Image Updater)
 
-Install Argo CD and Kargo on the cluster (or use `make install-argocd && make install-kargo`):
+Install Argo CD and Image Updater on the cluster (or use `make install-argocd && make install-image-updater`):
 
 ```bash
 # Install Argo CD
@@ -140,10 +142,8 @@ kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -
 # Retrieve initial admin password
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
 
-# Install Kargo via Helm
-helm repo add akuity https://akuity.github.io/kargo-charts
-helm repo update
-helm upgrade --install kargo akuity/kargo --namespace kargo --create-namespace --wait
+# Install Argo CD Image Updater
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/manifests/install.yaml
 ```
 
 ### 4. Configure Credentials & Apply GitOps Workflows
@@ -151,19 +151,18 @@ helm upgrade --install kargo akuity/kargo --namespace kargo --create-namespace -
 Configure credentials and apply the GitOps pipeline (or run `make apply-gitops`):
 
 ```bash
-# 1. Create Kargo Project
-kubectl apply -f kargo/project.yaml
+# 1. Grant the Image Updater ServiceAccount (argocd-image-updater, namespace argocd)
+#    ECR read access -- IRSA is the recommended path (attach an IAM role with
+#    AmazonEC2ContainerRegistryReadOnly to the ServiceAccount via an
+#    eks.amazonaws.com/role-arn annotation), matching how the EBS CSI driver
+#    is already wired up for this cluster in terraform/.
 
-# 2. Configure Git & ECR credentials
-cp kargo/secrets.yaml.template kargo/secrets.yaml
-# Edit kargo/secrets.yaml with your GitHub Personal Access Token (PAT with repo write permissions)
-kubectl apply -f kargo/secrets.yaml
+# 2. Give Image Updater write access to this Git repo for its write-back
+#    commits (a Deploy Key or PAT), per:
+#    https://argocd-image-updater.readthedocs.io/en/stable/configuration/git/
 
-# 3. Apply Kargo Warehouse & Production Stage
-kubectl apply -f kargo/warehouse.yaml
-kubectl apply -f kargo/stage-prod.yaml
-
-# 4. Apply Argo CD Application
+# 3. Apply the Argo CD Application (Image Updater annotations are already in
+#    argocd/application.yaml)
 kubectl apply -f argocd/application.yaml
 ```
 
@@ -178,8 +177,11 @@ git push origin main
 ```
 
 Monitor execution:
-1. **CI Pipeline (GitHub Actions):** Validates syntax, builds Docker images, and pushes to AWS ECR.
-2. **Kargo Promotion:** Detects new image digests, updates `helm/duckstore/values.yaml`, and commits to `main` with `[skip ci]`.
+1. **CI Pipeline (GitHub Actions):** Validates syntax, builds Docker images, and pushes to AWS ECR (`:<sha>` and `:latest`).
+2. **Argo CD Image Updater:** Detects the `:latest` tag's new digest, updates `helm/duckstore/values.yaml`, and commits to `main`.
+   ```bash
+   kubectl logs -n argocd deploy/argocd-image-updater -f
+   ```
 3. **Argo CD:** Automatically synchronizes updated manifests to the EKS cluster:
    ```bash
    kubectl get application duckstore -n argocd
