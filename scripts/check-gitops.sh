@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Verifies the Argo CD + Argo CD Image Updater pipeline is actually healthy
-# on the live cluster, instead of inferring it from Git/CI alone (which can't
-# see in-cluster state like credentials, pod health, or sync status).
+# =============================================================================
+# scripts/check-gitops.sh
+# =============================================================================
+# Verifies the health and operational status of Argo CD and Kargo CD on the
+# active Kubernetes cluster, ensuring that components are 100% healthy,
+# connected, and not stuck in "Progressing" or "Degraded" states.
 #
 # Usage: ./scripts/check-gitops.sh
-# Exit code: 0 if every check passes, 1 if any check fails.
+# Exit code: 0 if all checks pass, 1 if any check fails.
+# =============================================================================
 
 set -uo pipefail
 
@@ -16,103 +20,130 @@ check() {
   local result="$2"
   local detail="${3:-}"
   if [ "$result" = "ok" ]; then
-    printf "  \033[32m✓\033[0m %-40s %s\n" "$name" "$detail"
+    printf "  \033[32m✓\033[0m %-44s %s\n" "$name" "$detail"
     PASS=$((PASS + 1))
   else
-    printf "  \033[31m✗\033[0m %-40s %s\n" "$name" "$detail"
+    printf "  \033[31m✗\033[0m %-44s %s\n" "$name" "$detail"
     FAIL=$((FAIL + 1))
   fi
 }
 
-echo "== Cluster connectivity =="
+echo "================================================================"
+echo "  Argo CD & Kargo CD GitOps Health Verification"
+echo "================================================================"
+
+echo
+echo "== 1. Cluster Connectivity =="
 if kubectl cluster-info >/dev/null 2>&1; then
-  check "kubectl can reach the cluster" ok
+  check "Kubernetes API server reachable" ok
 else
-  check "kubectl can reach the cluster" fail "run 'make kubeconfig' first"
+  check "Kubernetes API server reachable" fail "cannot reach cluster via kubectl"
   echo
-  echo "Cannot continue without cluster access. Aborting."
+  echo "Aborting check: Cluster access required."
   exit 1
 fi
 
 echo
-echo "== Argo CD core components (namespace: argocd) =="
-for deploy in argocd-server argocd-repo-server argocd-application-controller; do
+echo "== 2. Argo CD Core Components (namespace: argocd) =="
+for deploy in argocd-server argocd-repo-server argocd-redis argocd-applicationset-controller; do
   ready=$(kubectl get deploy "$deploy" -n argocd -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "")
   desired=$(kubectl get deploy "$deploy" -n argocd -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "")
   if [ -n "$ready" ] && [ "$ready" = "$desired" ] && [ "$ready" != "0" ]; then
     check "$deploy" ok "$ready/$desired ready"
   else
-    check "$deploy" fail "${ready:-0}/${desired:-?} ready -- not found or not healthy"
+    check "$deploy" fail "${ready:-0}/${desired:-?} ready"
   fi
 done
-# argocd-application-controller is a StatefulSet in some install manifests, not a Deployment
-if ! kubectl get deploy argocd-application-controller -n argocd >/dev/null 2>&1; then
+
+# Check application-controller (Deployment or StatefulSet)
+if kubectl get statefulset argocd-application-controller -n argocd >/dev/null 2>&1; then
   ready=$(kubectl get statefulset argocd-application-controller -n argocd -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "")
   desired=$(kubectl get statefulset argocd-application-controller -n argocd -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "")
   if [ -n "$ready" ] && [ "$ready" = "$desired" ] && [ "$ready" != "0" ]; then
-    check "argocd-application-controller (statefulset)" ok "$ready/$desired ready"
+    check "argocd-application-controller" ok "$ready/$desired ready"
   else
-    check "argocd-application-controller (statefulset)" fail "${ready:-0}/${desired:-?} ready"
+    check "argocd-application-controller" fail "${ready:-0}/${desired:-?} ready"
   fi
-fi
-
-echo
-echo "== Argo CD Image Updater =="
-iu_ready=$(kubectl get deploy argocd-image-updater -n argocd -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "")
-iu_desired=$(kubectl get deploy argocd-image-updater -n argocd -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "")
-if [ -n "$iu_ready" ] && [ "$iu_ready" = "$iu_desired" ] && [ "$iu_ready" != "0" ]; then
-  check "argocd-image-updater deployment" ok "$iu_ready/$iu_desired ready"
+elif kubectl get deploy argocd-application-controller -n argocd >/dev/null 2>&1; then
+  ready=$(kubectl get deploy argocd-application-controller -n argocd -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "")
+  desired=$(kubectl get deploy argocd-application-controller -n argocd -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "")
+  if [ -n "$ready" ] && [ "$ready" = "$desired" ] && [ "$ready" != "0" ]; then
+    check "argocd-application-controller" ok "$ready/$desired ready"
+  else
+    check "argocd-application-controller" fail "${ready:-0}/${desired:-?} ready"
+  fi
 else
-  check "argocd-image-updater deployment" fail "not installed or not healthy -- see 'make install-image-updater'"
+  check "argocd-application-controller" fail "not found in namespace argocd"
 fi
 
 echo
-echo "== duckstore Application sync/health =="
+echo "== 3. Kargo CD Components (namespace: kargo) =="
+for deploy in kargo-api kargo-controller kargo-management-controller; do
+  ready=$(kubectl get deploy "$deploy" -n kargo -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "")
+  desired=$(kubectl get deploy "$deploy" -n kargo -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "")
+  if [ -n "$ready" ] && [ "$ready" = "$desired" ] && [ "$ready" != "0" ]; then
+    check "$deploy" ok "$ready/$desired ready"
+  else
+    check "$deploy" fail "${ready:-0}/${desired:-?} ready -- see 'make install-kargo'"
+  fi
+done
+
+echo
+echo "== 4. Kargo Project & Pipelines (namespace: duckstore) =="
+if kubectl get project duckstore >/dev/null 2>&1; then
+  check "Kargo Project 'duckstore'" ok "created"
+else
+  check "Kargo Project 'duckstore'" fail "missing -- run 'kubectl apply -f kargo/project.yaml'"
+fi
+
+if kubectl get warehouse duckstore-warehouse -n duckstore >/dev/null 2>&1; then
+  check "Kargo Warehouse 'duckstore-warehouse'" ok "created"
+else
+  check "Kargo Warehouse 'duckstore-warehouse'" fail "missing -- run 'kubectl apply -f kargo/warehouse.yaml'"
+fi
+
+if kubectl get stage prod -n duckstore >/dev/null 2>&1; then
+  check "Kargo Stage 'prod'" ok "created"
+else
+  check "Kargo Stage 'prod'" fail "missing -- run 'kubectl apply -f kargo/stage-prod.yaml'"
+fi
+
+echo
+echo "== 5. Argo CD Application Sync & Health =="
 sync_status=$(kubectl get application duckstore -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "")
 health_status=$(kubectl get application duckstore -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "")
+
 if [ "$sync_status" = "Synced" ]; then
   check "Application sync status" ok "Synced"
 else
   check "Application sync status" fail "${sync_status:-not found}"
 fi
+
 if [ "$health_status" = "Healthy" ]; then
-  check "Application health status" ok "Healthy"
+  check "Application health status" ok "Healthy (Out of Progressing)"
 else
-  check "Application health status" fail "${health_status:-not found}"
+  check "Application health status" fail "${health_status:-Progressing or Not Found}"
 fi
 
 echo
-echo "== Image Updater recent activity (last 5 min of logs) =="
-if kubectl get deploy argocd-image-updater -n argocd >/dev/null 2>&1; then
-  logs=$(kubectl logs -n argocd deploy/argocd-image-updater --since=5m 2>/dev/null || echo "")
-  if echo "$logs" | grep -qi "duckstore"; then
-    check "mentions the duckstore app" ok
+echo "== 6. Workload Pods (Namespaces: backend & frontend) =="
+for ns in backend frontend; do
+  if kubectl get ns "$ns" >/dev/null 2>&1; then
+    not_ready=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | awk '$2 !~ /^([0-9]+)\/\1$/ || $3 != "Running" {print $1}' || echo "")
+    if [ -z "$not_ready" ]; then
+      total=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+      check "Workload pods in '$ns'" ok "$total pods Running/Ready"
+    else
+      check "Workload pods in '$ns'" fail "unready pods: $not_ready"
+    fi
   else
-    check "mentions the duckstore app" fail "no recent log lines referencing duckstore -- may not have polled yet (default interval 2m) or image-list annotation isn't matching"
-  fi
-  if echo "$logs" | grep -qiE "error|unauthorized|authentication required|could not list tags|permission denied"; then
-    echo "$logs" | grep -iE "error|unauthorized|authentication required|could not list tags|permission denied" | tail -5 | sed 's/^/      /'
-    check "no auth/registry errors in recent logs" fail "see lines above -- likely missing IRSA for ECR or Git write-back credentials"
-  else
-    check "no auth/registry errors in recent logs" ok
-  fi
-else
-  check "Image Updater log check" fail "deployment not found, skipped"
-fi
-
-echo
-echo "== Workload pods =="
-for ns in frontend backend; do
-  not_ready=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | awk '$2 !~ /^([0-9]+)\/\1$/ || $3 != "Running" {print $1}')
-  if [ -z "$not_ready" ]; then
-    check "pods in $ns namespace" ok "all Running/Ready"
-  else
-    check "pods in $ns namespace" fail "not ready: $not_ready"
+    check "Namespace '$ns'" fail "namespace not created"
   fi
 done
 
 echo
 echo "================================================================"
-echo "  $PASS passed, $FAIL failed"
+echo "  Summary: $PASS passed, $FAIL failed"
 echo "================================================================"
+
 [ "$FAIL" -eq 0 ]

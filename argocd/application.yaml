@@ -6,30 +6,6 @@ metadata:
   labels:
     app.kubernetes.io/name: duckstore
     app.kubernetes.io/part-of: duckstore
-  annotations:
-    # Argo CD Image Updater: watches both ECR repos directly (replaces Kargo's
-    # Warehouse/Stage promotion pipeline). "digest" strategy tracks the :latest
-    # tag's digest, since CI pushes both :<sha> and :latest on every build --
-    # when :latest's digest changes, Image Updater writes the pinned
-    # tag@digest reference into helm/duckstore/values.yaml via a Git commit,
-    # which Argo CD's existing auto-sync then picks up like any other change.
-    argocd-image-updater.argoproj.io/image-list: |
-      backend=307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-backend,
-      frontend=307498582744.dkr.ecr.eu-west-1.amazonaws.com/duckstore-frontend
-    argocd-image-updater.argoproj.io/backend.update-strategy: digest
-    argocd-image-updater.argoproj.io/backend.allow-tags: "regexp:^latest$"
-    argocd-image-updater.argoproj.io/backend.helm.image-name: backend.image.repository
-    argocd-image-updater.argoproj.io/backend.helm.image-tag: backend.image.tag
-    argocd-image-updater.argoproj.io/frontend.update-strategy: digest
-    argocd-image-updater.argoproj.io/frontend.allow-tags: "regexp:^latest$"
-    argocd-image-updater.argoproj.io/frontend.helm.image-name: frontend.image.repository
-    argocd-image-updater.argoproj.io/frontend.helm.image-tag: frontend.image.tag
-    # Write the resolved image ref back into Git instead of only patching the
-    # live Argo CD Application param, so helm/duckstore/values.yaml stays the
-    # single source of truth and the change shows up in `git log` like any
-    # other commit (same auditability Kargo's git-commit step gave you).
-    argocd-image-updater.argoproj.io/write-back-method: git
-    argocd-image-updater.argoproj.io/git-branch: main
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -37,10 +13,9 @@ spec:
   source:
     repoURL: https://github.com/mohamedeelwishy/duckstore.git
     targetRevision: main
-    # Point directly to the structured Helm chart directory instead of legacy raw manifests
+    # Point directly to the structured Helm chart directory
     path: helm/duckstore
     helm:
-      # Optional: Explicit release name to match the application name
       releaseName: duckstore
   destination:
     server: https://kubernetes.default.svc
@@ -59,3 +34,9 @@ spec:
         duration: 5s
         factor: 2
         maxDuration: 3m
+  # Ignore controller-managed status fields on Ingress to ensure application health is not blocked
+  ignoreDifferences:
+    - group: networking.k8s.io
+      kind: Ingress
+      jsonPointers:
+        - /status

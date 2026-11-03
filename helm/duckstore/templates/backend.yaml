@@ -98,6 +98,10 @@ spec:
       labels:
         {{- include "duckstore.backend.labels" . | nindent 8 }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Pod Security Context: Run as non-root user (node UID 1000)
       securityContext:
         runAsUser: {{ .Values.backend.podSecurityContext.runAsUser }}

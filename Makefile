@@ -36,22 +36,23 @@ status: ## Show cluster workload status
 	@echo "---"
 	kubectl get pods,svc,pvc,storageclass -n backend
 
-check-gitops: ## Verify Argo CD + Image Updater are healthy and actually syncing
+check-gitops: ## Verify Argo CD + Kargo are healthy and operational
 	@./scripts/check-gitops.sh
 
-# --- GitOps Bootstrapping (Argo CD & Argo CD Image Updater) ------------------
+# --- GitOps Bootstrapping (Argo CD & Kargo CD) --------------------------------
 
 install-argocd: ## Install Argo CD into the cluster
 	kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+	kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-install-image-updater: ## Install Argo CD Image Updater (watches ECR directly, replaces Kargo)
-	kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/manifests/install.yaml
-	@echo "Next: configure AWS credentials for the image-updater ServiceAccount (IRSA recommended)"
-	@echo "so it can read ECR, and a Git write-back credentials secret -- see README.md."
+install-kargo: ## Install Kargo CD via Helm
+	helm upgrade --install kargo oci://ghcr.io/akuity/kargo-charts/kargo --namespace kargo --create-namespace --set api.adminAccount.enabled=false
 
-apply-gitops: ## Apply the Argo CD Application (Image Updater annotations are in argocd/application.yaml)
+apply-gitops: ## Apply Kargo and Argo CD GitOps definitions
+	kubectl apply -f kargo/project.yaml
+	@if [ -f kargo/secrets.yaml ]; then kubectl apply -f kargo/secrets.yaml; else echo "Note: kargo/secrets.yaml not found. Run ./scripts/setup-secrets.sh"; fi
+	kubectl apply -f kargo/warehouse.yaml
+	kubectl apply -f kargo/stage-prod.yaml
 	kubectl apply -f argocd/application.yaml
 
 # --- Local Development -------------------------------------------------------
