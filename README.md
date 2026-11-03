@@ -127,14 +127,14 @@ aws eks update-kubeconfig \
 kubectl get nodes -o wide
 ```
 
-### 3. Bootstrap GitOps (Argo CD & Argo CD Image Updater)
+### 3. Bootstrap GitOps (Argo CD & Kargo CD)
 
-Install Argo CD and Image Updater on the cluster (or use `make install-argocd && make install-image-updater`):
+Install Argo CD and Kargo CD on the cluster (or use `make install-argocd && make install-kargo`):
 
 ```bash
 # Install Argo CD
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 # Wait for Argo CD server readiness
 kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
@@ -142,8 +142,11 @@ kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -
 # Retrieve initial admin password
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
 
-# Install Argo CD Image Updater
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/manifests/install.yaml
+# Install Kargo CD via Helm
+helm upgrade --install kargo oci://ghcr.io/akuity/kargo-charts/kargo \
+  --namespace kargo \
+  --create-namespace \
+  --set api.adminAccount.enabled=false
 ```
 
 ### 4. Configure Credentials & Apply GitOps Workflows
@@ -151,18 +154,15 @@ kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj-labs/argoc
 Configure credentials and apply the GitOps pipeline (or run `make apply-gitops`):
 
 ```bash
-# 1. Grant the Image Updater ServiceAccount (argocd-image-updater, namespace argocd)
-#    ECR read access -- IRSA is the recommended path (attach an IAM role with
-#    AmazonEC2ContainerRegistryReadOnly to the ServiceAccount via an
-#    eks.amazonaws.com/role-arn annotation), matching how the EBS CSI driver
-#    is already wired up for this cluster in terraform/.
+# 1. Apply credentials securely without checking them into Git
+./scripts/setup-secrets.sh
 
-# 2. Give Image Updater write access to this Git repo for its write-back
-#    commits (a Deploy Key or PAT), per:
-#    https://argocd-image-updater.readthedocs.io/en/stable/configuration/git/
+# 2. Apply Kargo Project, Warehouse, and Stage definitions
+kubectl apply -f kargo/project.yaml
+kubectl apply -f kargo/warehouse.yaml
+kubectl apply -f kargo/stage-prod.yaml
 
-# 3. Apply the Argo CD Application (Image Updater annotations are already in
-#    argocd/application.yaml)
+# 3. Apply the Argo CD Application
 kubectl apply -f argocd/application.yaml
 ```
 
@@ -178,11 +178,8 @@ git push origin main
 
 Monitor execution:
 1. **CI Pipeline (GitHub Actions):** Validates syntax, builds Docker images, and pushes to AWS ECR (`:<sha>` and `:latest`).
-2. **Argo CD Image Updater:** Detects the `:latest` tag's new digest, updates `helm/duckstore/values.yaml`, and commits to `main`.
-   ```bash
-   kubectl logs -n argocd deploy/argocd-image-updater -f
-   ```
-3. **Argo CD:** Automatically synchronizes updated manifests to the EKS cluster:
+2. **Kargo Promotion:** Detects the newly pushed image digest from ECR, updates `helm/duckstore/values.yaml` in Git, and commits with `[skip ci]`.
+3. **Argo CD:** Automatically synchronizes updated manifests to the cluster:
    ```bash
    kubectl get application duckstore -n argocd
    kubectl get pods -n backend

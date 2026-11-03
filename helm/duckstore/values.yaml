@@ -15,6 +15,14 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
+# Image Pull Secrets
+# ------------------------------------------------------------------------------
+# Secrets for pulling private container images from registries (such as AWS ECR).
+# Injected into the backend and frontend Pod specifications.
+imagePullSecrets: []
+  # - name: ecr-registry-secret
+
+# ------------------------------------------------------------------------------
 # Namespace Provisioning
 # ------------------------------------------------------------------------------
 # Manages explicit creation of the multi-tier backend and frontend namespaces.

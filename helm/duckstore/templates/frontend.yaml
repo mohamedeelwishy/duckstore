@@ -47,6 +47,10 @@ spec:
       labels:
         {{- include "duckstore.frontend.labels" . | nindent 8 }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Pod-level security context: Non-root user (UID/GID 1000)
       securityContext:
         runAsUser: {{ .Values.frontend.podSecurityContext.runAsUser }}
